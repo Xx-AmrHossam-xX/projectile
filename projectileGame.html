@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>Nagwa Task</title>
+    <style>
+        body {
+            margin-left: auto;
+            margin-right: auto;
+            font-family: Helvetic Arial sans-serif;
+        }
+
+        .game-container {
+            height: 600px;
+            margin-bottom: 8px;
+        }
+
+        nav,
+        .game-container,
+        .instructions {
+            width: 750px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        nav {
+            position: absolute;
+            height: 50px;
+            max-width: 100%;
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            background-color: #03a9f4;
+        }
+    </style>
+</head>
+
+<body>
+    <p class="instructions">
+        Fire the red ball into the blue bucket.Use the left and right arrow keys to change the
+        angle and the up and down keys to increase/decrease the initial velocity of the ball. Press return to fire a
+        ball.Press esc to restart.</p>
+
+    <div id="game-container" class="game-container">
+        <nav>
+            <label for="velocity-input">
+                velocity
+                <input id="velocity-input" type="number" min='3' max='20' step="0.1" value="10">
+            </label>
+            <label for="angle-input">
+                angle
+                <input id="angle-input" type="number" min='-89' max='89'>
+            </label>
+            <button type="button" id="launch-button">Launch</button>
+            <button type="button" id="reset-button">Reset</button>
+            <div>
+                <span>X:</span>
+                <span id="x-value"></span>
+            </div>
+            <div>
+                <span>Y:</span>
+                <span id="y-value"></span>
+            </div>
+            <div>
+                <span>Hits:</span>
+                <span id="hits-value">0</span>
+            </div>
+            <div>
+                <span>Misses:</span>
+                <span id="misses-value">0</span>
+            </div>
+
+        </nav>
+        <canvas width="750" height="600" id="game-canvas"></canvas>
+    </div>
+
+    <script>
+        (function () {
+
+            "use strict";
+
+            let game = function (_canvas, _speed = 10, _angle = 0, _g = 9.81) {
+
+                const degToRad = function (deg) { return deg * (Math.PI / 180); };
+                const radToDeg = function (deg) { return deg * (180 / Math.PI); };
+                const clearCanvas = function (ctxt) { ctxt.clearRect(0, 0, width, height); };
+                const clip = function (val, min, max) { return Math.min(Math.max(min, val), max); };
+                const fontString = function (size) { return size + "px Helvetica, Arial, sans-serif"; };
+
+                const canvas = _canvas;
+                const ctxt = canvas.getContext("2d");
+                const width = canvas.width;
+                const height = canvas.height;
+                const radius = 15;
+                const mToPx = 50;
+                const maxAngle = degToRad(89);
+                const x0 = width / 2;
+                const bottomHeight = 50;
+                const y0 = height - bottomHeight;
+                const finishHeight = y0 + radius;
+                const bin = { width: undefined, left: undefined };
+
+
+
+
+                const setBin = (function () {
+                    const getDiscreteUniform = function (max) {
+                        return Math.floor(Math.random() * (max + 1));
+                    };
+                    const binDecSize = 4;
+                    const minBinSize = 3 * radius;
+                    return function (binWidth) {
+                        let newWidth;
+                        if (binWidth) {
+                            newWidth = binWidth;
+                        } else {
+                            if (bin.width === undefined) {
+                                newWidth = 100;
+                            } else {
+                                newWidth = bin.width - binDecSize;
+                            }
+                        }
+                        if (newWidth < minBinSize) {
+                            return false;
+                        }
+                        bin.width = newWidth;
+                        bin.left = getDiscreteUniform(width - bin.width);
+                        return true;
+                    };
+                })();
+
+                const balls = [];
+                let hit, finished, tStart, animating, hits, misses;
+
+                let speed = _speed;
+                let g = _g;
+                let angle = degToRad(_angle);
+
+
+                const setAngle = function (degAngle) {
+                    if (!finished) {
+                        let newAngle = clip(degToRad(degAngle), -maxAngle, maxAngle);
+                        if (newAngle !== angle) {
+                            angle = newAngle;
+                            document.getElementById("angle-input").value = Math.round(angle * (180 / Math.PI));
+                            draw();
+                        }
+                    }
+                };
+
+                const setSpeed = function (_speed) {
+                    if (!finished) {
+                        let newSpeed = clip(_speed, 3, 20);
+                        if (newSpeed !== speed) {
+                            speed = newSpeed;
+                            document.getElementById("velocity-input").value = speed.toFixed(1);
+                            draw();
+                        }
+                    }
+                };
+
+
+                const xScale = function (val) { return mToPx * val + x0; };
+                const yScale = function (val) { return -mToPx * val + y0; };
+
+
+                const createLayer = function (initDraw) {
+                    let lCanvas = document.createElement('canvas');
+                    lCanvas.width = width;
+                    lCanvas.height = height;
+                    return Object.freeze({
+                        canvas: lCanvas,
+                        draw: initDraw(lCanvas.getContext("2d"))
+                    });
+                };
+
+
+                const drawLayer = function (layer) {
+                    if (layer.draw()) {//draw layer in off-screen canvas, if it's not empty...
+                        ctxt.drawImage(layer.canvas, 0, 0);//...draw on on-screen canvas too
+                    }
+                };
+
+
+                const lGrid = createLayer(function (c) {
+                    c.font = fontString(14);
+                    c.fillStyle = "black";
+                    c.fillRect(0, 0, width, height);
+                    c.strokeStyle = "#5c5c5c";
+                    c.fillStyle = c.strokeStyle;
+                    c.lineWidth = 0.4;
+                    //clearCanvas(c);
+                    for (let i = 1; i < 10; i++) {
+                        let vert = yScale(i);
+                        c.beginPath();
+                        c.moveTo(0, vert);
+                        c.lineTo(width, vert);
+                        c.stroke();
+                        c.fillText(i + " m", 30, vert - 3);
+                    }
+
+                    return function () {
+                        return true;
+                    };
+                });
+
+
+                const lAngle = createLayer(function (c) {
+                    let h = 4;
+                    let hText = h + 0.4;
+                    let arcRadius = 100; //px
+                    let startAngle = -Math.PI / 2;
+                    c.strokeStyle = "white";
+                    c.fillStyle = "white";
+                    c.lineWidth = 2;
+                    c.textAlign = "center";
+                    c.textBaseline = "middle";
+                    c.font = fontString(20);
+
+                    return function () {
+                        clearCanvas(c);
+                        c.setLineDash([10, 5]);
+                        c.beginPath();
+                        c.moveTo(x0, y0);
+                        c.lineTo(x0, yScale(h));
+                        c.stroke();
+                        c.setLineDash([1, 0]);
+                        c.beginPath();
+                        c.moveTo(x0, y0);
+                        c.lineTo(xScale(h * Math.sin(angle)), yScale(h * Math.cos(angle)));
+                        c.stroke();
+                        c.beginPath();
+                        c.arc(x0, y0, arcRadius, startAngle, startAngle + angle, angle < 0 ? true : false);
+                        c.stroke();
+                        c.beginPath();
+                        let midAngle = angle / 2;
+                        let xMid = xScale(hText * Math.sin(midAngle));
+                        let yMid = yScale(hText * Math.cos(midAngle));
+                        c.fillText(Math.round(angle * (180 / Math.PI)) + "°", xMid, yMid);
+                        return true;
+                    };
+                });
+
+
+                const lAnimation = createLayer(function (c) {
+                    c.textAlign = "center";
+                    c.textBaseline = "middle";
+                    c.font = fontString(25);
+                    let fullCircle = degToRad(360);
+
+                    return function () {
+                        if (animating) {
+                            if (balls.length) {
+                                clearCanvas(c);
+                                balls.forEach(function (ball) {
+                                    c.fillStyle = "red";
+                                    c.beginPath();
+                                    let x = ball.x;
+                                    let y = ball.y;
+                                    c.moveTo(x, y);
+                                    c.arc(x, y, radius, 0, fullCircle, false);
+                                    c.fill();
+                                    let label = Math.floor(ball.yHeight);
+                                    if (label >= 0) {
+                                        c.fillStyle = "white";
+                                        c.fillText(Math.floor(ball.yHeight), x, y);
+                                    }
+                                });
+                            } else {
+                                stopAnimation();
+                            }
+                        }
+                        return animating;
+                    };
+                });
+
+
+                const lGround = createLayer(function (c) {
+                    c.fillStyle = "white";
+                    c.arc(x0, y0, radius + 2, 0, 2 * Math.PI, false);
+                    c.fill();
+                    c.fillStyle = "darkgreen";
+                    c.fillRect(0, y0, width, bottomHeight);
+
+                    return function () {
+                        return true;
+                    };
+                });
+
+
+                const lBin = createLayer(function (c) {
+                    c.strokeStyle = "white";
+                    c.textAlign = "center";
+                    c.textBaseline = "top";
+                    c.font = fontString(14);
+                    let extra = 1;
+                    let yLine = y0 + 10;
+                    let yText = yLine + 10;
+                    let endHeight = 8;
+
+                    return function () {
+                        clearCanvas(c);
+                        c.fillStyle = "rgb(38,93,171)";
+                        c.beginPath();
+                        let binLeft = bin.left;
+                        let binWidth = bin.width;
+                        let binCentre = binLeft + binWidth / 2;
+                        c.fillRect(binLeft, y0 - extra, binWidth, bottomHeight + extra);
+                        c.moveTo(x0, yLine);
+                        c.lineTo(binCentre, yLine);
+                        c.moveTo(x0, yLine);
+                        c.lineTo(x0, yLine + endHeight);
+                        c.moveTo(binCentre, yLine);
+                        c.lineTo(binCentre, yLine + endHeight);
+                        c.stroke();
+                        c.fillStyle = "white";
+                        c.fillText((Math.abs(binCentre - x0) / mToPx).toFixed(2) + " m", binCentre, yText);
+                        return true;
+                    };
+                });
+
+
+
+
+
+                const lComplete = createLayer(function (c) {
+                    c.textAlign = "center";
+                    c.textBaseline = "top";
+                    let textTop = 125;
+
+                    return function () {
+                        if (finished) {
+                            let tComplete = Number(Math.round((performance.now() - tStart) / 1000)).toLocaleString();
+                            clearCanvas(c);
+                            c.fillStyle = "black";
+                            c.globalAlpha = 0.75;
+                            c.fillRect(0, 0, width, height);
+                            c.fillStyle = "white";
+                            c.globalAlpha = 1;
+                            c.font = fontString(30);
+                            c.fillText("Congratulations!", x0, 125);
+                            c.font = fontString(20);
+                            let textSep = 40;
+                            c.fillText("Task completed in " + tComplete + " seconds", x0, textTop + textSep);
+                            textSep = 35;
+                            c.fillText("Press esc to play again", x0, textTop + 2 * textSep);
+                        }
+                        return finished;
+                    };
+
+
+                });
+
+
+                const moveBin = function () {
+                    let success = setBin();
+                    if (success) {
+                        hit = false;
+                    } else {
+                        finished = true;
+                    }
+                };
+
+
+                const addBall = function () {
+                    balls.push({
+                        t0: performance.now(),
+                        v0: speed,
+                        theta: angle,
+                        x: x0,
+                        y: y0,
+                        yHeight: 0,
+                        xEnd: xScale((Math.pow(speed, 2) / g) * Math.sin(2 * angle)),
+                        complete: false,
+                    });
+                };
+
+                const removeBall = function (index) {
+                    let nBalls = balls.length;
+                    if (index === (nBalls - 1)) {
+                        balls.pop();
+                    } else if (index === 0) {
+                        balls.shift();
+                    } else {
+                        balls.splice(index, 1);
+                    }
+                };
+
+
+                const recordHit = function () {
+                    ++hits;
+                    document.getElementById("hits-value").innerHTML = hits;
+                    hit = true;
+                };
+
+                const recordMiss = function () {
+                    ++misses;
+                    document.getElementById("misses-value").innerHTML = misses;
+                };
+
+
+                const testHit = function (ball) {
+                    let binLeft = bin.left;
+                    let ballLeft = ball.xEnd - radius;
+                    let binRight = bin.left + bin.width;
+                    let ballRight = ball.xEnd + radius;
+                    if (ballLeft > binLeft && ballRight < binRight) {
+                        recordHit();
+                    } else {
+                        recordMiss();
+                    }
+                };
+
+
+                const updateBalls = function (time) {
+                    let nBalls = balls.length;
+                    if (nBalls) {
+                        let counter = nBalls - 1;
+                        while (counter >= 0 && balls.length) {
+                            let ball = balls[counter];
+                            let dt = (time - ball.t0) / 1000;
+                            let theta = ball.theta;
+                            let v0 = ball.v0;
+                            let yHeight = v0 * dt * Math.cos(theta) - 0.5 * g * Math.pow(dt, 2);
+                            let y = yScale(yHeight);
+
+                            if (y > finishHeight && !ball.complete && !hit) {
+                                ball.complete = true;
+                                testHit(ball);
+                            }
+
+                            if (y < height + radius) {
+                                ball.x = xScale(v0 * dt * Math.sin(theta));
+                                document.getElementById("x-value").innerHTML = ball.x.toFixed(1)
+                                ball.y = y;
+                                document.getElementById("y-value").innerHTML = ball.y.toFixed(1)
+                                ball.yHeight = yHeight;
+                                counter--;
+                            } else {
+                                removeBall(counter);
+                            }
+                        }
+                    }
+                    if (hit && !balls.length) {
+                        moveBin();
+                    }
+                };
+
+
+                const fireBall = function () {
+                    if (!hit && !animating) {
+                        addBall();
+                        startAnimation();
+                    }
+
+                };
+
+
+                let draw = function (time = performance.now()) {
+                    updateBalls(time);
+                    clearCanvas(ctxt);
+                    drawLayer(lGrid);
+                    drawLayer(lAngle);
+                    drawLayer(lAnimation);
+                    drawLayer(lGround);
+                    drawLayer(lBin);
+                    drawLayer(lComplete);
+                };
+
+
+                const animate = function (time) {
+                    animating = window.requestAnimationFrame(animate);
+                    draw(time);
+                };
+
+                const startAnimation = function () {
+                    animating = window.requestAnimationFrame(animate);
+                };
+
+                const stopAnimation = function () {
+                    if (animating !== undefined) {
+                        window.cancelAnimationFrame(animating);
+                    }
+                    animating = undefined;
+                };
+
+
+                const start = function () {
+                    stopAnimation();
+                    balls.length = 0;
+                    setBin(100);
+                    hits = 0;
+                    misses = 0;
+                    angle = 0;
+                    speed = 10;
+                    hit = false;
+                    finished = false;
+                    tStart = performance.now();
+                    document.getElementById("velocity-input").value = 10
+                    document.getElementById("angle-input").value = 0
+                    document.getElementById("misses-value").innerHTML = 0
+                    document.getElementById("hits-value").innerHTML = 0
+                    document.getElementById("x-value").innerHTML = x0.toFixed(1)
+                    document.getElementById("y-value").innerHTML = y0.toFixed(1)
+                    draw();
+                };
+
+                const restart = function () {
+                    if (finished || confirm("Restart game?")) {
+                        start();
+                    }
+                };
+
+                start();
+
+
+                return Object.freeze({
+                    setSpeed: function (val) { setSpeed(val); return this; },
+                    setAngle: function (val) { setAngle(val); return this; },
+                    decAngle: function () { setAngle(radToDeg(angle) - 1); return this; },
+                    incAngle: function () { setAngle(radToDeg(angle) + 1); return this; },
+                    decSpeed: function () { setSpeed(speed - 0.1); return this; },
+                    incSpeed: function () { setSpeed(speed + 0.1); return this; },
+                    fireBall: function () { fireBall(); return this; },
+                    restart: function () { restart(); return this; }
+                });
+
+
+            };
+
+
+            let scene = game(document.getElementById("game-canvas"), 10, 10);
+
+            document.addEventListener("keydown", function (evt) {
+                let code = evt.keyCode;
+                if (code >= 37 && code <= 40) { //arrow keys
+                    if (code === 37) { //left
+                        scene.decAngle();
+                    } else if (code === 38) { //up
+                        scene.incSpeed();
+                    } else if (code === 39) { //right
+                        scene.incAngle();
+                    } else { //down
+                        scene.decSpeed();
+                    }
+                    evt.preventDefault();
+                }
+            }, false);
+
+
+            document.addEventListener("keyup", function (evt) {
+                if (evt.keyCode === 13) {
+                    scene.fireBall();
+                    evt.preventDefault();
+                } else if (evt.keyCode === 27) {
+                    scene.restart();
+                }
+            }, false);
+
+            document.getElementById("launch-button").addEventListener("click", function (evt) {
+                scene.fireBall();
+                evt.preventDefault();
+            }, false);
+            document.getElementById("reset-button").addEventListener("click", function (evt) {
+                scene.restart();
+            }, false);
+            document.getElementById("velocity-input").addEventListener("change", function (evt) {
+                scene.setSpeed(evt.target.value)
+            }, false);
+            document.getElementById("angle-input").addEventListener("change", function (evt) {
+                scene.setAngle(evt.target.value)
+            }, false);
+        })();
+    </script>
+</body>
+
+</html>
